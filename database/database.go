@@ -1,42 +1,43 @@
-package database 
+package database
 
 import (
-  "github.com/go-redis/redis/v8"
-  "os"
   "context"
+	"fmt"
+	"log"
+	"time"
+  "os"
+
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/mongo/readpref"
 )
 
-var ctx = context.Background()
+func Connect() (mongo.Database,error){
+  client, err := mongo.NewClient(options.Client().ApplyURI(os.Getenv("MONGODB")))
 
-func Connect() *redis.Client{
-  rdb := redis.NewClient(&redis.Options{
-    Addr: os.Getenv("DATABASE_HOST"),
-    Password: os.Getenv("DATABASE_PASSWORD"),
-    DB: 0,
-  })
+	if err != nil {
+		return nil, err
+	}
 
-  return rdb
-}
+	ctx, _ := context.WithTimeout(context.Background(), 10*time.Second)
 
+	err = client.Connect(ctx)
 
-func Set(name string, value string) error{
-  rdb := Connect()
-  err := rdb.Set(ctx, "key", "value", 0).Err()
+	if err != nil {
+		return nil, err
+	}
 
-  if err != nil {
-    return err
-  }
+	defer client.Disconnect(ctx)
 
-  return nil
-}
-
-func Get(name string) (string, error){
-  rdb := Connect()
-  val, err := rdb.Get(ctx, name).Result()
+  err = client.Ping(ctx, readpref.Primary())
 
   if err != nil {
-    return "", err
+    return nil, err
   }
 
-  return val, nil
+  db := client.Database("cosmic-database")
+
+
+  return db
 }

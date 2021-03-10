@@ -11,8 +11,10 @@ import (
   "net/url"
   "io/ioutil"
   "github.com/temoto/robotstxt"
-  "cosmic/database"
+  // "cosmic/caching"
   "encoding/json"
+  "cosmic/sitemaps"
+  
 )
 
 
@@ -69,6 +71,7 @@ func Execute(rawurl string){
     entries = append(entries, e)
   }
 
+  
   // for i, entries := 0, entries; i < len(urls.urls); i++{
   //   e := DatabaseEntryURLS{
   //     url: urls.urls[i].fullURL,
@@ -78,7 +81,7 @@ func Execute(rawurl string){
   //   entries = append(entries, e)
   // }
 
-  entry, err := database.Get("host+" + u.Host)
+  // entry, err := database.Get("host+" + u.Host)
 
   if err != nil{
     entry := DatabaseEntry{
@@ -94,12 +97,13 @@ func Execute(rawurl string){
       return
     }
 
-    err = database.Set("host+" + u.Host, string(out))
+    fmt.Println(string(out))
+    // err = database.Set("host+" + u.Host, string(out))
 
-    if err != nil{
-      log.Fatal(err)
-      return
-    }
+    // if err != nil{
+    //   log.Fatal(err)
+    //   return
+    // }
   } else {
     fmt.Println("founnd ??")
     fmt.Println(entry)
@@ -216,6 +220,37 @@ func scrapeURL(rawurl string) (*URLQuery, error){
     return nil, err
   }
 
+  for sitemap := range robots.Sitemaps{
+    su, err := sitemaps.GetURLS(robots.Sitemaps[sitemap])
+
+    if err != nil{
+      log.Fatal(err)
+      return nil, err
+    }
+
+    for u := range su{
+      link := su[u]
+      
+      u, err := url.Parse(link)
+
+
+      if err != nil{
+        
+      } else {
+        link := URLQueryArray{
+          host: u.Host,
+          path: u.Path,
+          fullURL: u.Scheme + "://" + u.Host + u.Path,
+        }
+
+        urls = append(urls, link)
+      }
+
+    }
+  }
+  // fmt.Println(robots.Sitemaps)
+
+  
   group := robots.FindGroup("cosmicbot")
 
   rawurlparse, err := url.Parse(rawurl)
