@@ -10,11 +10,12 @@ import (
   "log"
   "net/url"
   "io/ioutil"
+  "go.mongodb.org/mongo-driver/bson"
   "github.com/temoto/robotstxt"
   // "cosmic/caching"
-  "encoding/json"
+  // "encoding/json"
   "cosmic/sitemaps"
-  
+  "cosmic/database" 
 )
 
 
@@ -22,6 +23,7 @@ type URLQueryArray struct {
   host string
   path string
   fullURL string
+  Meta *Meta
 }
 
 type URLQuery struct {
@@ -33,6 +35,7 @@ type Meta struct {
   Name string
   Description string
   Icon string
+  Keywords []string
 }
 
 type DatabaseEntryURLS struct {
@@ -43,6 +46,7 @@ type DatabaseEntryURLS struct {
 type DatabaseEntry struct {
   Host string
   URLS []DatabaseEntryURLS
+  Meta *Meta
 }
 
 func Execute(rawurl string){
@@ -72,42 +76,62 @@ func Execute(rawurl string){
   }
 
   
-  // for i, entries := 0, entries; i < len(urls.urls); i++{
-  //   e := DatabaseEntryURLS{
-  //     url: urls.urls[i].fullURL,
-  //     meta: urls.meta,
-  //   }
-
-  //   entries = append(entries, e)
-  // }
-
-  // entry, err := database.Get("host+" + u.Host)
-
-  if err != nil{
-    entry := DatabaseEntry{
-      Host: u.Host,
-      URLS: entries,
+  for i, entries := 0, entries; i < len(urls.urls); i++{
+    e := DatabaseEntryURLS{
+      Url: urls.urls[i].fullURL,
+      Meta: urls.urls[i].Meta,
     }
 
-    fmt.Println(entry)
-    out, err := json.Marshal(entry)
+    entries = append(entries, e)
+  }
+
+  cur, ctx, err := database.GetFromCollection("hosts", bson.D{{}})
+
+  if err != nil{
+    log.Fatal(err)
+  }
+
+  // var entriesa []DatabaseEntry
+
+  if err := cur.Err(); err != nil{
+    log.Fatal(err)
+  }
+
+  for cur.Next(ctx) {
+    var entry DatabaseEntry
+    err = cur.Decode(&entry)
 
     if err != nil{
       log.Fatal(err)
       return
     }
 
-    fmt.Println(string(out))
-    // err = database.Set("host+" + u.Host, string(out))
-
-    // if err != nil{
-    //   log.Fatal(err)
-    //   return
-    // }
-  } else {
-    fmt.Println("founnd ??")
     fmt.Println(entry)
   }
+
+  cur.Close(ctx)
+
+  entry := DatabaseEntry{
+    Host: u.Host,
+    URLS: entries,
+    Meta: urls.meta,
+  }
+
+  fmt.Println(entry)
+  // out, err := json.Marshal(entry)
+
+  // if err != nil{
+  //   log.Fatal(err)
+  //   return
+  // }
+
+  // b, err := database.AddToCollection("hosts", entry)
+
+  // if err != nil{
+  //   log.Fatal(err)
+  // }
+
+  // fmt.Println(b)
 }
 
 func getMeta(source string) (*Meta, error){
@@ -124,13 +148,20 @@ func getMeta(source string) (*Meta, error){
   name = doc.Find("title").Text()
 
   description, _ = doc.Find("meta[name='description']").Attr("content")
-   
-  icon = ""
+  
+  keywords, _ := doc.Find("meta[name='keywords']").Attr("content")
+
+  icon, e := doc.Find("link[rel='icon']").Attr("href")
+
+  if e == false{
+    icon, _ =  doc.Find("link[rel='shortcut icon']").Attr("href")
+  }
 
   result := &Meta{
     Name: name,
     Description: description,
     Icon: icon,
+    Keywords: strings.Split(keywords, ","),
   }
 
   return result, nil
@@ -168,6 +199,36 @@ func getRobotsTxt(rawurl string) (string ,error){
   text, _ := ioutil.ReadAll(resp.Body)
 
   return string(text), nil
+}
+
+func Request(rawurl string) (string, error){
+  request, err := http.NewRequest("GET", rawurl, nil)
+
+  client := &http.Client{
+    Timeout: 30 * time.Second,
+  }
+
+  if err != nil{
+    return "", err
+  }
+
+  request.Header.Set("User-Agent", "cosmicbot (+github.com/hackermondev/cosmic)")
+  request.Header.Set("referer", rawurl)
+  
+  resp, err := client.Do(request)
+
+  if resp.StatusCode != 200{
+    return "", errors.New("Website returns status code: ")
+  }
+
+  defer resp.Body.Close()
+  body, err := ioutil.ReadAll(resp.Body)
+
+  if err != nil{
+    return "", err
+  }
+
+  return string(body), nil
 }
 
 func scrapeURL(rawurl string) (*URLQuery, error){
@@ -237,13 +298,36 @@ func scrapeURL(rawurl string) (*URLQuery, error){
       if err != nil{
         
       } else {
-        link := URLQueryArray{
-          host: u.Host,
-          path: u.Path,
-          fullURL: u.Scheme + "://" + u.Host + u.Path,
-        }
+        b, err := Request(u.Scheme + "://" + u.Host + u.Path)
 
-        urls = append(urls, link)
+        if err != nil{
+          fmt.Println("Could not get meta for ", u.Host + u.Path)
+
+          var meta *Meta
+          link := URLQueryArray{
+            host: u.Host,
+            path: u.Path,
+            fullURL: u.Scheme + "://" + u.Host + u.Path,
+            Meta: meta,
+          }
+
+          urls = append(urls, link)
+        } else {
+          meta, err := getMeta(b)
+          
+          if err != nil{
+            log.Fatal(err)
+          }
+
+          link := URLQueryArray{
+            host: u.Host,
+            path: u.Path,
+            fullURL: u.Scheme + "://" + u.Host + u.Path,
+            Meta: meta,
+          }
+
+          urls = append(urls, link)
+        }
       }
 
     }

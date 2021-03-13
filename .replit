@@ -1,3 +1,2 @@
-# For some reason go build wouldn't build my new code so doing this :(
-run="go run main.go"
+run="go build cosmic && ./cosmic"
 language="go"
