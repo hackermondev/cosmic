@@ -11,6 +11,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/readpref"
 )
 
+
 func Connect() (*mongo.Client, context.Context, error){
   client, err := mongo.NewClient(options.Client().ApplyURI(os.Getenv("MONGODB")))
 
@@ -34,7 +35,6 @@ func Connect() (*mongo.Client, context.Context, error){
     return client, nil, err
   }
 
-
   return client, ctx, nil
 }
 
@@ -49,10 +49,39 @@ func AddToCollection(collectionName string, item interface{}) (bool, error) {
 
   _, err = collection.InsertOne(ctx, item)
 
+  client.Disconnect(ctx)
   if err != nil{
     return false, err
   }
 
+  return true, nil
+}
+
+func DeleteIfExists(collectionName string, host string) (bool, error){
+  client, ctx, err := Connect()
+
+  if err != nil{
+    return false, err
+  }
+
+  collection := client.Database("cosmic").Collection(collectionName)
+
+  cur, err := collection.Find(ctx, bson.M{ "host":  host })
+
+  if err != nil{
+    cur = nil
+  }
+
+  if cur != nil{
+    _, err := collection.DeleteMany(ctx, bson.M{"host": host })
+    
+    client.Disconnect(ctx)
+    if err != nil{
+      return false, err
+    }
+  }
+
+  client.Disconnect(ctx)
   return true, nil
 }
 
@@ -66,7 +95,8 @@ func GetFromCollection(collectionName string, filter bson.D)  (*mongo.Cursor, co
   collection := client.Database("cosmic").Collection(collectionName)
 
   cur, err := collection.Find(ctx, filter)
-
+  
+  client.Disconnect(ctx)
   if err != nil{
     return nil, nil, err
   }

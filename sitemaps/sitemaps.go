@@ -13,11 +13,13 @@ func GetURLS(s string) ([]string, error){
 
 	smap, err := sitemap.Get(s, nil)
 
+  var urls []string
+
 	if err != nil {
-		return nil, err
+    // 
+		return urls, nil
 	}
 
-  var urls []string
 
 	for _, URL := range smap.URL {
     urls = append(urls, URL.Loc)
@@ -27,6 +29,7 @@ func GetURLS(s string) ([]string, error){
 }
 
 func myFetch(URL string, options interface{}) ([]byte, error) {
+  // fmt.Println(URL)
 	req, err := http.NewRequest("GET", URL, nil)
 
 	if err != nil {

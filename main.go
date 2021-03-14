@@ -10,12 +10,16 @@ import (
   "log"
   "net/url"
   "io/ioutil"
-  "go.mongodb.org/mongo-driver/bson"
+  // "go.mongodb.org/mongo-driver/bson"
   "github.com/temoto/robotstxt"
   // "cosmic/caching"
   // "encoding/json"
   "cosmic/sitemaps"
-  "cosmic/database" 
+  "cosmic/database"
+  "cosmic/keepalive"
+  "math" 
+
+  "strconv"
 )
 
 
@@ -47,6 +51,14 @@ type DatabaseEntry struct {
   Host string
   URLS []DatabaseEntryURLS
   Meta *Meta
+  Node int
+}
+
+func min(a, b int) int {
+    if a <= b {
+        return a
+    }
+    return b
 }
 
 func Execute(rawurl string){
@@ -65,73 +77,98 @@ func Execute(rawurl string){
   }
 
   var entries []DatabaseEntryURLS
+  var toBeScraped []string
+
+  if urls == nil{
+    return
+  }
 
   for k := range urls.urls {
-    e := DatabaseEntryURLS{
-      Url: urls.urls[k].fullURL,
-      Meta: urls.meta,
-    }
+    p, _ := url.Parse(urls.urls[k].fullURL)
 
-    entries = append(entries, e)
+    toBeScraped = append(toBeScraped, urls.urls[k].fullURL)
+
+    if p.Host != u.Host{
+
+    } else {
+      e := DatabaseEntryURLS{
+        Url: urls.urls[k].fullURL,
+        Meta: urls.urls[k].Meta,
+      }
+
+      entries = append(entries, e)
+    }
   }
 
   
-  for i, entries := 0, entries; i < len(urls.urls); i++{
-    e := DatabaseEntryURLS{
-      Url: urls.urls[i].fullURL,
-      Meta: urls.urls[i].Meta,
+  // for i, entries := 0, entries; i < len(urls.urls); i++{
+  //   e := DatabaseEntryURLS{
+  //     Url: urls.urls[i].fullURL,
+  //     Meta: urls.urls[i].Meta,
+  //   }
+
+  //   entries = append(entries, e)
+  // }
+
+  var entryNodes []DatabaseEntry
+
+  if len(entries) < 500{
+    entry := DatabaseEntry{
+      Host: u.Host,
+      URLS: entries,
+      Meta: urls.meta,
+      Node: 0,
     }
 
-    entries = append(entries, e)
+    entryNodes = append(entryNodes, entry)
+  } else {
+    times := math.Round(float64(len(entries))/500)
+
+    for i := 0; i <= int(times); i++{
+      entry := DatabaseEntry{
+        Host: u.Host,
+        URLS: entries[i:min(i+500, len(entries))],
+        Meta: urls.meta,
+        Node: i,
+      }
+
+      entryNodes = append(entryNodes, entry)
+    }
   }
 
-  cur, ctx, err := database.GetFromCollection("hosts", bson.D{{}})
+  // entry := DatabaseEntry{
+  //   Host: u.Host,
+  //   URLS: entries,
+  //   Meta: urls.meta,
+  // }
+
+  // fmt.Println(entry)
 
   if err != nil{
     log.Fatal(err)
+    return
   }
 
-  // var entriesa []DatabaseEntry
+  database.DeleteIfExists("hosts", u.Host)
 
-  if err := cur.Err(); err != nil{
-    log.Fatal(err)
-  }
-
-  for cur.Next(ctx) {
-    var entry DatabaseEntry
-    err = cur.Decode(&entry)
+  for a := range entryNodes{
+    _, err := database.AddToCollection("hosts", entryNodes[a])
 
     if err != nil{
       log.Fatal(err)
-      return
     }
-
-    fmt.Println(entry)
   }
 
-  cur.Close(ctx)
+  // _, err = database.AddToCollectionAndDeleteIfExists("hosts", entryNodes, u.Host)
 
-  entry := DatabaseEntry{
-    Host: u.Host,
-    URLS: entries,
-    Meta: urls.meta,
-  }
-
-  fmt.Println(entry)
-  // out, err := json.Marshal(entry)
-
-  // if err != nil{
-  //   log.Fatal(err)
-  //   return
-  // }
-
-  // b, err := database.AddToCollection("hosts", entry)
-
-  // if err != nil{
+  // if err != nil {
   //   log.Fatal(err)
   // }
 
-  // fmt.Println(b)
+  // fmt.Println("Saving current data")
+  for x := range toBeScraped{
+    Execute(toBeScraped[x])
+  }
 }
 
 func getMeta(source string) (*Meta, error){
@@ -191,9 +228,30 @@ func getRobotsTxt(rawurl string) (string ,error){
   request.Header.Set("referer", rawurl)
   
   resp, err := client.Do(request)
+  
+  if err != nil{
+    return "", err
+  }
 
   if resp.StatusCode != 200{
-    return "", errors.New("Website returns status code: ")
+
+    if resp.StatusCode == 429{
+      retryAfter := resp.Header.Get("Retry-After")
+
+      retry, err := strconv.Atoi(retryAfter)
+
+      if err != nil{
+
+      } else {
+        time.Sleep(time.Duration(retry * 1000))
+
+        s, err := getRobotsTxt(rawurl)
+
+        return s, err
+      }
+    }
+
+    return "", errors.New("Website returns status code: " + resp.Status + " ( " + rawurl + ")")
   }
 
   text, _ := ioutil.ReadAll(resp.Body)
@@ -202,6 +260,7 @@ func getRobotsTxt(rawurl string) (string ,error){
 }
 
 func Request(rawurl string) (string, error){
+
   request, err := http.NewRequest("GET", rawurl, nil)
 
   client := &http.Client{
@@ -217,8 +276,33 @@ func Request(rawurl string) (string, error){
   
   resp, err := client.Do(request)
 
+  if err != nil{
+    return "", err
+  }
+
   if resp.StatusCode != 200{
-    return "", errors.New("Website returns status code: ")
+    if resp.StatusCode != 200{
+
+    if resp.StatusCode == 429{
+      retryAfter := resp.Header.Get("Retry-After")
+
+      retry, err := strconv.Atoi(retryAfter)
+
+      if err != nil{
+
+      } else {
+        time.Sleep(time.Duration(retry * 1000))
+
+        s, err := Request(rawurl)
+
+        return s, err
+      }
+    }
+
+    return "", errors.New("Website returns status code: " + resp.Status + " ( " + rawurl + ")")
+  }
+
+    return "", errors.New("Website returns status code: " + resp.Status + " ( " + rawurl + ")")
   }
 
   defer resp.Body.Close()
@@ -232,6 +316,7 @@ func Request(rawurl string) (string, error){
 }
 
 func scrapeURL(rawurl string) (*URLQuery, error){
+  // fmt.Println(rawurl)
   request, err := http.NewRequest("GET", rawurl, nil)
 
   client := &http.Client{
@@ -246,9 +331,34 @@ func scrapeURL(rawurl string) (*URLQuery, error){
   request.Header.Set("referer", rawurl)
   
   resp, err := client.Do(request)
+  
+  if err != nil{
+    return nil, err
+  }
 
   if resp.StatusCode != 200{
-    return nil, errors.New("Website returns status code: ")
+    if resp.StatusCode != 200{
+
+    if resp.StatusCode == 429{
+      retryAfter := resp.Header.Get("Retry-After")
+
+      retry, err := strconv.Atoi(retryAfter)
+
+      if err != nil{
+
+      } else {
+        time.Sleep(time.Duration(retry * 1000))
+
+        s, err := scrapeURL(rawurl)
+
+        return s, err
+      }
+    }
+
+    return nil, errors.New("Website returns status code: " + resp.Status + " ( " + rawurl + ")")
+  }
+
+    return nil, errors.New("Website returns status code: " + resp.Status + " ( " + rawurl + ")")
   }
 
   defer resp.Body.Close()
@@ -285,11 +395,11 @@ func scrapeURL(rawurl string) (*URLQuery, error){
     su, err := sitemaps.GetURLS(robots.Sitemaps[sitemap])
 
     if err != nil{
-      log.Fatal(err)
-      return nil, err
-    }
+      // fmt.Println("Could not parse sitemap ", robots.Sitemaps[sitemap])
 
-    for u := range su{
+      panic("ok")
+    } else {
+      for u := range su{
       link := su[u]
       
       u, err := url.Parse(link)
@@ -303,7 +413,10 @@ func scrapeURL(rawurl string) (*URLQuery, error){
         if err != nil{
           fmt.Println("Could not get meta for ", u.Host + u.Path)
 
+          fmt.Println(err)
+
           var meta *Meta
+
           link := URLQueryArray{
             host: u.Host,
             path: u.Path,
@@ -331,6 +444,7 @@ func scrapeURL(rawurl string) (*URLQuery, error){
       }
 
     }
+    }
   }
   // fmt.Println(robots.Sitemaps)
 
@@ -343,14 +457,16 @@ func scrapeURL(rawurl string) (*URLQuery, error){
     return nil, err
   }
 
+  var result *URLQuery
+  
   if !group.Test(rawurlparse.Path){
-    return nil, errors.New("Cannot read this page")
+    return result, nil
   }
 
   doc.Find("a").Each(func (i int, s *goquery.Selection){
     link, _ := s.Attr("href")
 
-    if strings.HasPrefix(link, "/") {
+    if strings.HasPrefix(link, "/") == true && strings.HasPrefix(link, "//") == false{
       u, err := url.Parse(rawurl)
 
 
@@ -364,10 +480,25 @@ func scrapeURL(rawurl string) (*URLQuery, error){
 
       // link = url + link
 
+      b, err := Request(u.Scheme + "://" + u.Host + link)
+      
+      if err != nil{
+        fmt.Println(err)
+
+        b = "<html><b>invalid</b></html>"
+      }
+
+      meta, err := getMeta(b)
+
+      if err != nil{
+        log.Fatal(err)
+      }
+
       link := URLQueryArray{
         host: u.Host,
         path: link,
         fullURL: u.Scheme + "://" + u.Host + link,
+        Meta: meta,
       }
 
       urls = append(urls, link)
@@ -411,17 +542,30 @@ func scrapeURL(rawurl string) (*URLQuery, error){
       }
 
 
+      b, err := Request(u.Scheme + "://" + u.Host + u.Path)
+
+      if err != nil{
+        fmt.Println(err)
+      }
+
+      meta, err := getMeta(b)
+
+      if err != nil{
+        log.Fatal(err)
+      }
+
       link := URLQueryArray{
         host: u.Host,
         path: u.Path,
         fullURL: u.Scheme + "://" + u.Host + u.Path,
+        Meta: meta,
       }
 
       urls = append(urls, link)
     }
   })  
 
-  result := &URLQuery{
+  result = &URLQuery{
     urls: urls,
     meta: meta,
   }
@@ -430,7 +574,30 @@ func scrapeURL(rawurl string) (*URLQuery, error){
 }
 
 func main() {
+  ascii := `
+
+                                             /$$          
+                                            |__/          
+  /$$$$$$$  /$$$$$$   /$$$$$$$ /$$$$$$/$$$$  /$$  /$$$$$$$
+ /$$_____/ /$$__  $$ /$$_____/| $$_  $$_  $$| $$ /$$_____/
+| $$      | $$  \ $$|  $$$$$$ | $$ \ $$ \ $$| $$| $$      
+| $$      | $$  | $$ \____  $$| $$ | $$ | $$| $$| $$      
+|  $$$$$$$|  $$$$$$/ /$$$$$$$/| $$ | $$ | $$| $$|  $$$$$$$
+ \_______/ \______/ |_______/ |__/ |__/ |__/|__/ \_______/
+                                                          
+                                                          
+                                                          
+
+  `
+
+  fmt.Println(ascii)
+
   database.Connect()
 
-  Execute("https://replit.com/")
+  go Execute("https://repl.it")
+  go Execute("https://google.com")
+  go Execute("https://github.com")
+  go Execute("https://myflixer.to")
+  
+  keepalive.StartServer()
 }
