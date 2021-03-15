@@ -7,6 +7,10 @@ import (
   "cosmic/database"
   "cosmic/keepalive"
   "cosmic/scraping"
+  "os"
+
+  "go.mongodb.org/mongo-driver/mongo"
+  "context"
 )
 
 
@@ -30,10 +34,18 @@ func main() {
 
   fmt.Println(ascii)
 
-  Client, ctx, err := database.Connect()
+  isTests := os.Getenv("TEST") == "yes"
 
-  if err != nil{
-    log.Fatal(err)
+  var Client *mongo.Client
+  var ctx context.Context
+
+  if isTests == false{
+    var err error
+    Client, ctx, err = database.Connect()
+
+    if err != nil{
+      log.Fatal(err)
+    } 
   }
   
   ticker := time.NewTicker(5 * time.Second)
@@ -52,29 +64,36 @@ func main() {
       }
   }()
 
-  go scraping.Execute("https://repl.it", Client, ctx)
-  go scraping.Execute("https://google.com", Client, ctx)
-  go scraping.Execute("https://github.com", Client, ctx)
-  go scraping.Execute("https://myflixer.to", Client, ctx) 
+  if isTests == false{
+    go scraping.Execute("https://repl.it", Client, ctx)
+    go scraping.Execute("https://google.com", Client, ctx)
+    go scraping.Execute("https://github.com", Client, ctx)
+    go scraping.Execute("https://myflixer.to", Client, ctx) 
+  } else {
+    go scraping.Execute("https://example.com", nil, nil)
+  }
 
-  go scraping.ReScrape(Client, ctx)
+  if isTests == false{
+    go scraping.ReScrape(Client, ctx)
 
-  ticker = time.NewTicker(5 * time.Second)
-  quit = make(chan struct{})
+    ticker = time.NewTicker(5 * time.Second)
+    quit = make(chan struct{})
 
-  go func() {
-      for {
-        select {
-          case <- ticker.C:
-            go scraping.ReScrape(Client, ctx)
-            
-          case <- quit:
-              ticker.Stop()
-              return
-          }
-      }
-  }()
+    go func() {
+        for {
+          select {
+            case <- ticker.C:
+              go scraping.ReScrape(Client, ctx)
+              
+            case <- quit:
+                ticker.Stop()
+                return
+            }
+        }
+    }()
+  }
 
-  keepalive.StartServer()
+  keepalive.StartServer(isTests)
   
+
 }

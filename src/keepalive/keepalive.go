@@ -11,13 +11,17 @@ import (
   "cosmic/scraping"
   "cosmic/database"
   "os"
+
+  "go.mongodb.org/mongo-driver/mongo"
+  "context"
+
 )
 
 type Request struct {
   url string
 }
 
-func StartServer(){
+func StartServer(isTests bool){
   port := os.Getenv("PORT")
 
   if port == ""{
@@ -25,12 +29,19 @@ func StartServer(){
   }
 
   color.Cyan("Starting server on port :" + port)
-
-  Client, ctx, err := database.Connect()
   
-  if err != nil{
-    log.Fatal(err)
+  var Client *mongo.Client
+  var ctx context.Context
+  var err error
+  
+  if isTests == false{
+    Client, ctx, err = database.Connect()
+
+    if err != nil{
+      log.Fatal(err)
+    }
   }
+
 
   http.HandleFunc("/", func (w http.ResponseWriter, r *http.Request){
     color.Cyan("GET /")

@@ -24,6 +24,7 @@ import (
   "context"
 
   "runtime"
+  "os"
 )
 
 type URLQueryArray struct {
@@ -138,8 +139,11 @@ func Execute(rawurl string, client *mongo.Client, ctx context.Context){
 
   for k := range urls.urls {
     p, _ := url.Parse(urls.urls[k].fullURL)
- 
-    go Execute(urls.urls[k].fullURL, client, ctx)
+
+    // assumes it is running as test is client is nil
+    if client != nil{
+      go Execute(urls.urls[k].fullURL, client, ctx)
+    }
 
     if p.Host != u.Host{
 
@@ -202,14 +206,20 @@ func Execute(rawurl string, client *mongo.Client, ctx context.Context){
     return
   }
 
-  database.DeleteIfExists(client, ctx, "hosts", u.Host)
+  if client != nil{
+    database.DeleteIfExists(client, ctx, "hosts", u.Host)
 
-  for a := range entryNodes{
-    _, err := database.AddToCollection(client, ctx, "hosts", entryNodes[a])
+    for a := range entryNodes{
+      _, err := database.AddToCollection(client, ctx, "hosts", entryNodes[a])
 
-    if err != nil{
-      log.Fatal(err)
+      if err != nil{
+        log.Fatal(err)
+      }
     }
+  } else {
+    fmt.Println(entryNodes)
+
+    os.Exit(0)
   }
 
   // _, err = database.AddToCollectionAndDeleteIfExists("hosts", entryNodes, u.Host)
