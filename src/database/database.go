@@ -9,6 +9,8 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.mongodb.org/mongo-driver/mongo/readpref"
+
+  "github.com/fatih/color"
 )
 
 
@@ -19,7 +21,7 @@ func Connect() (*mongo.Client, context.Context, error){
 		return client, nil, err
 	}
 
-	ctx, _ := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, _ := context.WithTimeout(context.Background(), 2*time.Minute)
 
 	err = client.Connect(ctx)
 
@@ -35,21 +37,23 @@ func Connect() (*mongo.Client, context.Context, error){
     return client, nil, err
   }
 
+  color.Blue("Database is connected to the server.")
   return client, ctx, nil
 }
 
-func AddToCollection(collectionName string, item interface{}) (bool, error) {
-  client, ctx, err := Connect()
 
-  if err != nil{
-    return false, err
-  }
+func AddToCollection(client *mongo.Client, ctx context.Context, collectionName string, item interface{}) (bool, error) {
+
+  // client, ctx, err := Connect()
+
+  // if err != nil{
+  //   return false, err
+  // }
 
   collection := client.Database("cosmic").Collection(collectionName)
 
-  _, err = collection.InsertOne(ctx, item)
+  _, err := collection.InsertOne(ctx, item)
 
-  client.Disconnect(ctx)
   if err != nil{
     return false, err
   }
@@ -57,12 +61,12 @@ func AddToCollection(collectionName string, item interface{}) (bool, error) {
   return true, nil
 }
 
-func DeleteIfExists(collectionName string, host string) (bool, error){
-  client, ctx, err := Connect()
+func DeleteIfExists(client *mongo.Client, ctx context.Context,collectionName string, host string) (bool, error){
+  // client, ctx, err := Connect()
 
-  if err != nil{
-    return false, err
-  }
+  // if err != nil{
+  //   return false, err
+  // }
 
   collection := client.Database("cosmic").Collection(collectionName)
 
@@ -75,28 +79,28 @@ func DeleteIfExists(collectionName string, host string) (bool, error){
   if cur != nil{
     _, err := collection.DeleteMany(ctx, bson.M{"host": host })
     
-    client.Disconnect(ctx)
+    // client.Disconnect(ctx)
     if err != nil{
       return false, err
     }
   }
 
-  client.Disconnect(ctx)
+  // client.Disconnect(ctx)
   return true, nil
 }
 
-func GetFromCollection(collectionName string, filter bson.D)  (*mongo.Cursor, context.Context, error){
-  client, ctx, err := Connect()
+func GetFromCollection(client *mongo.Client, ctx context.Context, collectionName string, filter bson.D)  (*mongo.Cursor, context.Context, error){
+  // client, ctx, err := Connect()
 
-  if err != nil{
-    return nil, nil, err
-  }
+  // if err != nil{
+  //   return nil, nil, err
+  // }
 
   collection := client.Database("cosmic").Collection(collectionName)
 
   cur, err := collection.Find(ctx, filter)
   
-  client.Disconnect(ctx)
+  // client.Disconnect(ctx)
   if err != nil{
     return nil, nil, err
   }

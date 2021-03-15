@@ -1,4 +1,4 @@
-package main
+package scraping
 
 import (
   "fmt"
@@ -12,16 +12,19 @@ import (
   "io/ioutil"
   // "go.mongodb.org/mongo-driver/bson"
   "github.com/temoto/robotstxt"
-  // "cosmic/caching"
+  "cosmic/caching"
   // "encoding/json"
   "cosmic/sitemaps"
   "cosmic/database"
-  "cosmic/keepalive"
   "math" 
 
   "strconv"
-)
+  "go.mongodb.org/mongo-driver/mongo"
+  "go.mongodb.org/mongo-driver/bson"
+  "context"
 
+  "runtime"
+)
 
 type URLQueryArray struct {
   host string
@@ -40,6 +43,9 @@ type Meta struct {
   Description string
   Icon string
   Keywords []string
+  Language string
+  Secure bool
+  Score int
 }
 
 type DatabaseEntryURLS struct {
@@ -61,7 +67,55 @@ func min(a, b int) int {
     return b
 }
 
-func Execute(rawurl string){
+
+func bToMb(b uint64) uint64 {
+  return b / 1024 / 1024
+}
+
+func PrintMemUsage() {
+  var m runtime.MemStats
+
+  runtime.ReadMemStats(&m)
+
+  fmt.Println("--------------------------------")
+  fmt.Println("Alloc = %v MiB", bToMb(m.Alloc))
+  fmt.Println("TotalAlloc = %v MiB", bToMb(m.TotalAlloc))
+  fmt.Println("Sys = %v MiB", bToMb(m.Sys))
+  fmt.Println("NumGC = %v\n", m.NumGC)
+  fmt.Println("--------------------------------")
+
+  fmt.Println("\n")
+}
+
+func ReScrape(client *mongo.Client, ctx context.Context){
+  cursor, _, err := database.GetFromCollection(client, ctx, "hosts", bson.D{})
+
+  if err != nil{
+    fmt.Println(err)
+    return
+  }
+
+  if err := cursor.Err(); err != nil{
+    fmt.Println(err)
+    return
+  }
+
+  var urls []DatabaseEntry
+
+  if err = cursor.All(ctx, &urls); err != nil {
+    fmt.Println(err)
+  }
+
+  for x := range urls{
+    go Execute("https://" + urls[x].Host, client, ctx)
+
+    for y := range urls[x].URLS{
+      go Execute(urls[x].URLS[y].Url, client, ctx)
+    }
+  }
+}
+
+func Execute(rawurl string, client *mongo.Client, ctx context.Context){
   u, err := url.Parse(rawurl)
 
   if err != nil{
@@ -72,12 +126,11 @@ func Execute(rawurl string){
   urls, err := scrapeURL(rawurl)
 
   if err != nil{
-    log.Fatal(err)
+    fmt.Println(err)
     return
   }
 
   var entries []DatabaseEntryURLS
-  var toBeScraped []string
 
   if urls == nil{
     return
@@ -85,8 +138,8 @@ func Execute(rawurl string){
 
   for k := range urls.urls {
     p, _ := url.Parse(urls.urls[k].fullURL)
-
-    toBeScraped = append(toBeScraped, urls.urls[k].fullURL)
+ 
+    go Execute(urls.urls[k].fullURL, client, ctx)
 
     if p.Host != u.Host{
 
@@ -149,10 +202,10 @@ func Execute(rawurl string){
     return
   }
 
-  database.DeleteIfExists("hosts", u.Host)
+  database.DeleteIfExists(client, ctx, "hosts", u.Host)
 
   for a := range entryNodes{
-    _, err := database.AddToCollection("hosts", entryNodes[a])
+    _, err := database.AddToCollection(client, ctx, "hosts", entryNodes[a])
 
     if err != nil{
       log.Fatal(err)
@@ -166,16 +219,26 @@ func Execute(rawurl string){
   // }
 
   // fmt.Println("Saving current data")
-  for x := range toBeScraped{
-    Execute(toBeScraped[x])
-  }
 }
 
-func getMeta(source string) (*Meta, error){
+
+func getMeta(source string, rurl string) (*Meta, error){
   var name string
   var description string
   var icon string
 
+  /*
+    Meta Score - Determins what position your website is in the results
+
+    +1 - Has a valid language meta (so the search engine can make sure it provides )
+
+    +1 - The website is secure (uses https)
+
+    +1 - The website has more than 20+ links linked in the page
+  */
+
+
+  score := 0
   doc, err := goquery.NewDocumentFromReader(strings.NewReader(source))
 
   if err != nil{
@@ -194,16 +257,44 @@ func getMeta(source string) (*Meta, error){
     icon, _ =  doc.Find("link[rel='shortcut icon']").Attr("href")
   }
 
+  language, e := doc.Find("html").Attr("lang")
+
+  if e == false{
+    language =  "en"
+    
+  } else {
+    score += 1
+  }
+
+  l := doc.Find("a").Length()
+
+  if l > 20{
+    score += 1
+  }
+
+  secure := false
+
+  p, _ := url.Parse(rurl)
+
+  if p.Scheme == "https"{
+    secure = true
+
+    score += 1
+  }
+
   result := &Meta{
     Name: name,
     Description: description,
     Icon: icon,
     Keywords: strings.Split(keywords, ","),
+    Language: language,
+    Secure: secure,
+    Score: score,
   }
 
   return result, nil
 }
-
+ 
 func getRobotsTxt(rawurl string) (string ,error){
   u, err := url.Parse(rawurl)
 
@@ -214,52 +305,26 @@ func getRobotsTxt(rawurl string) (string ,error){
 
   rawurl = u.Scheme + "://" + u.Host + "/robots.txt"
 
-  request, err := http.NewRequest("GET", rawurl, nil)
-
-  client := &http.Client{
-    Timeout: 30 * time.Second,
-  }
+  text, err := Request(rawurl)
 
   if err != nil{
     return "", err
   }
-
-  request.Header.Set("User-Agent", "cosmicbot (+github.com/hackermondev/cosmic)")
-  request.Header.Set("referer", rawurl)
   
-  resp, err := client.Do(request)
-  
-  if err != nil{
-    return "", err
-  }
-
-  if resp.StatusCode != 200{
-
-    if resp.StatusCode == 429{
-      retryAfter := resp.Header.Get("Retry-After")
-
-      retry, err := strconv.Atoi(retryAfter)
-
-      if err != nil{
-
-      } else {
-        time.Sleep(time.Duration(retry * 1000))
-
-        s, err := getRobotsTxt(rawurl)
-
-        return s, err
-      }
-    }
-
-    return "", errors.New("Website returns status code: " + resp.Status + " ( " + rawurl + ")")
-  }
-
-  text, _ := ioutil.ReadAll(resp.Body)
-
   return string(text), nil
 }
 
 func Request(rawurl string) (string, error){
+  p, _ := url.Parse(rawurl)
+  
+
+  c, err := caching.Get("caching_" + p.Host + p.Path)
+
+  // fmt.Println(err == nil)
+  // fmt.Println(c == "")
+  if c != ""{
+    return c, nil
+  }
 
   request, err := http.NewRequest("GET", rawurl, nil)
 
@@ -301,7 +366,7 @@ func Request(rawurl string) (string, error){
 
     return "", errors.New("Website returns status code: " + resp.Status + " ( " + rawurl + ")")
   }
-
+    
     return "", errors.New("Website returns status code: " + resp.Status + " ( " + rawurl + ")")
   }
 
@@ -312,11 +377,13 @@ func Request(rawurl string) (string, error){
     return "", err
   }
 
+  caching.Set("caching_" + p.Host + p.Path, string(body), time.Duration(2 * time.Hour))
+  
   return string(body), nil
 }
 
 func scrapeURL(rawurl string) (*URLQuery, error){
-  // fmt.Println(rawurl)
+  time.Sleep(time.Duration(5))
   request, err := http.NewRequest("GET", rawurl, nil)
 
   client := &http.Client{
@@ -368,7 +435,7 @@ func scrapeURL(rawurl string) (*URLQuery, error){
     return nil, err
   }
 
-  meta, err := getMeta(string(body))
+  meta, err := getMeta(string(body), request.URL.String())
 
   //fmt.Println(string(body))
   if err != nil{
@@ -426,7 +493,7 @@ func scrapeURL(rawurl string) (*URLQuery, error){
 
           urls = append(urls, link)
         } else {
-          meta, err := getMeta(b)
+          meta, err := getMeta(b, u.Scheme + "://" + u.Host + link)
           
           if err != nil{
             log.Fatal(err)
@@ -488,7 +555,7 @@ func scrapeURL(rawurl string) (*URLQuery, error){
         b = "<html><b>invalid</b></html>"
       }
 
-      meta, err := getMeta(b)
+      meta, err := getMeta(b, u.Scheme + "://" + u.Host + link)
 
       if err != nil{
         log.Fatal(err)
@@ -548,7 +615,7 @@ func scrapeURL(rawurl string) (*URLQuery, error){
         fmt.Println(err)
       }
 
-      meta, err := getMeta(b)
+      meta, err := getMeta(b, u.Scheme + "://" + u.Host + link)
 
       if err != nil{
         log.Fatal(err)
@@ -571,33 +638,4 @@ func scrapeURL(rawurl string) (*URLQuery, error){
   }
 
   return result, nil
-}
-
-func main() {
-  ascii := `
-
-                                             /$$          
-                                            |__/          
-  /$$$$$$$  /$$$$$$   /$$$$$$$ /$$$$$$/$$$$  /$$  /$$$$$$$
- /$$_____/ /$$__  $$ /$$_____/| $$_  $$_  $$| $$ /$$_____/
-| $$      | $$  \ $$|  $$$$$$ | $$ \ $$ \ $$| $$| $$      
-| $$      | $$  | $$ \____  $$| $$ | $$ | $$| $$| $$      
-|  $$$$$$$|  $$$$$$/ /$$$$$$$/| $$ | $$ | $$| $$|  $$$$$$$
- \_______/ \______/ |_______/ |__/ |__/ |__/|__/ \_______/
-                                                          
-                                                          
-                                                          
-
-  `
-
-  fmt.Println(ascii)
-
-  database.Connect()
-
-  go Execute("https://repl.it")
-  go Execute("https://google.com")
-  go Execute("https://github.com")
-  go Execute("https://myflixer.to")
-  
-  keepalive.StartServer()
 }
