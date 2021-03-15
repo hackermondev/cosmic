@@ -1,0 +1,1 @@
+go build -o ../../builds ../../src/main.go
